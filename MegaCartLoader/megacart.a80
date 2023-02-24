@@ -1,0 +1,668 @@
+        ;---------------------------------------------------------------------
+        ; TVComputer MEGACART ROM Loader Program
+        ;  Main loader routines
+        ; (c) 2021-2023 Laszlo Arvai
+        ;---------------------------------------------------------------------
+        .include "definitions.a80"
+
+        org     CART_START_ADDRESS
+        db      "MOPS"
+
+        ;---------------------------------------------------------------------
+        ; Main program entry point
+ENTRY:
+        ; entry code -> change to page 0 (the page change code is repeated at the begninning of all pages)
+        xor     a
+        if MULTICART == 1
+        ld      (ALTERNATE_PAGE_SELECT), a      ; Change to Page0
+        ld      (PAGE_SELECT), a                ; Change to Page0
+        jp      MAIN                            ; Jump to initialization
+        db      "MULTICART"
+        else
+        ld      (PAGE_SELECT), a                ; Change to Page0
+        jp      MAIN                            ; Jump to initialization
+        db      "MEGACART"
+        endif
+
+        db      SW_MAJOR_VERSION                ; Major version number
+        db      SW_MINOR_VERSION                ; Minor version number
+
+        ; Detect BASIC ROM version and determine ROM return address
+MAIN:
+        ; Set memory map to: U0, U1, U2, CART
+        ld      a, P_U0_U1_U2_CART
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+
+        push    de                              ; save returning address for 2.x ROM
+
+        ; Copy BASINIT program to the RAM
+        ld	hl, RAM_FUNCTIONS_STORAGE
+	ld	de, RAM_FUNCTIONS
+	ld	bc, RAM_FUNCTIONS_CODE_LENGTH
+	ldir
+
+	; call BASIC area initialize and version detection
+	call	BASIC_INITIALIZE
+
+        ; calculate returning address for 2.x ROM
+        pop     de                              ; restore returning address for 2.x ROM
+	ld	hl, -22
+	add     hl, de
+	ld      (ROM_RETURN_ADDRESS), hl
+
+       ; NanoSD compatibility code
+NANOSD_COMPATIBILITY:
+        ; search for nano SD
+        ld      c, CARD_NUMBER
+        ld      hl, CARD_MEM_AREA - CARD_MEM_AREA_LENGTH
+        push    hl
+
+NANOSD_NEXT_CARD:
+        ; load card memory area address
+        pop     hl                              ; HL = card memory area address
+        ld      de, CARD_MEM_AREA_LENGTH        ; increment address to point to the next card area
+        add     hl, de
+        push    hl                              ; HL is the card memory area address
+         
+        ld      de, NANOSD_STRING               ; DE points to the 'NANOSD' string (including length)
+        ld      a, (de)                         ; load strin glength
+        inc     a                               ; add length byte
+        ld      b,  a                           ; B = string length + 1 (length byte)
+
+NANOSD_COMPARE_NAME:
+        ld      a, (de)                         ; compare names
+        cp      (hl)
+        jr      nz, NANOSD_NONMATCHING_NAME
+        inc     hl                              ; next character
+        inc     de
+        djnz    NANOSD_COMPARE_NAME             ; end of the string?
+
+        ; NanoSD card found
+        pop     hl                              ; remove card memory address from the stack
+
+        ; check keyboard command injection status
+        ld      a, (KEY_PRESS_IDX)              ; check NanoSD keyboard injection staus
+        cp      $ff
+        jp      nz, DISABLE_LOADER              ; there are pending keys -> disable this loader program
+
+        ; no pending keys -> disable NanoSD
+        ld      hl, (NANOSD_IT_VECTOR_SAVE)     ; restore IT vector modified by NanoSD
+        ld      (NANOSD_IT_VECTOR_ADDR), hl
+
+        jr      CHAIN_SYSTEM_FUNCTION_CALL
+         
+         ; disabes this loader program and returns to the ROM
+DISABLE_LOADER:
+	ld	a,(VERSION)
+	or      a
+	jp	z, BASIC_RETURN_1x
+
+        ; Return to ROM routine for 2.x version rom	
+        ; set BASIC flag to normal boot
+        ld	a, 00h
+        ld	(BASIC_FLAG), a
+
+	; load return address
+	ld	hl,(ROM_RETURN_ADDRESS)
+				
+	; Set memory map to: SYS, U1, U2, CART
+	ld	a, P_SYS_U1_U2_CART
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+
+	; return back to ROM
+	jp	(hl)        
+
+NANOSD_NONMATCHING_NAME:
+        dec     c
+        jr      nz, NANOSD_NEXT_CARD
+
+        ; NanoSD card not found -> continue with normal operation
+        pop     hl                              ; remove card memory address from the stack
+
+        ; chain loader functions into the system call
+CHAIN_SYSTEM_FUNCTION_CALL:
+ 
+        ; *** Chain system function call
+
+        ; Copy system function pass (return to original ROM function) code to RAM
+        ld      HL, SYSTEM_FUNCTION_PASS_STORAGE
+        ld      DE, SYSTEM_FUNCTION_PASS
+        ld      BC, SYSTEM_FUNCTION_PASS_CODE_LENGTH
+        ldir
+
+        ; Copy ROM entry address of the system function call
+        ld      HL, (SYSTEM_FUNCTION_ROM_ENTRY_ADDRESS)
+        ld      (SYSTEM_FUNCTION_CHAIN_ADDRESS+1), HL
+
+        ; Overwrite system function caller RAM code
+        ld      hl, SYSTEM_FUNCTION_CALLER_STORAGE
+        ld      de, SYSTEM_FUNCTION_CALLER
+        ld      bc, SYSTEM_FUNCTION_CALLER_CODE_LENGTH
+        ldir
+
+        ; No ROM file is opened
+        ld      a, 0
+        ld      (FILE_OPENED_FLAG), a
+
+        ; *** Load and Start the first program from the ROM filesystem ***
+        call    GET_FILE_SYSTEM_INFO
+
+        ld      de, CART_MAX_FILENAME_LENGTH    ; Skip filename
+        add     hl, de
+        ld      e,  (hl)                        ; Load address
+        inc     hl
+        ld      d,  (hl)
+        inc     hl
+
+        ld      a, (hl)                         ; load page index
+        ld      (CURRENT_PAGE_INDEX), a
+        inc     hl
+
+        ld      c,  (hl)                        ; Load length
+        inc     hl
+        ld      b,  (hl)
+        
+        ld      l, e
+        ld      h, d
+	ld	de, BASIC_PROGRAM_START
+
+	call    COPY_PROGRAM_TO_RAM
+
+	; Start program
+	ld	a,(VERSION)
+	or      a
+	jp	z, BASIC_RUN_1x
+
+        ; Start program routine for 2.x version rom	
+        ; set BASIC flag to no start screen, no prompt, no new command and autostart
+        ld	a, 0fh
+        ld	(BASIC_FLAG), a
+
+	; load return address
+	ld	hl,(ROM_RETURN_ADDRESS)
+				
+	; Set memory map to: SYS, U1, U2, CART
+	ld	a, P_SYS_U1_U2_CART
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+
+	; return back to ROM
+	jp	(hl)        
+
+        ;------------------------------------
+        ; Load file system area area address
+        ; Input: -
+        ; Output: HL - File system area address depending on the basic version
+        ;          A - Number of files in the file system
+        ; Destroys: A, F
+GET_FILE_SYSTEM_INFO:
+        ld      a, (VERSION)
+        or      a
+        jr      z, SET_VERSION1x_FILE_SYSTEM
+        
+        ld      hl, (FILE_SYSTEM.DIRECTORY2x_ADDRESS)       ; File system for 2.x ROM
+        
+        ld      a, high(CART_START_ADDRESS)                 ; Convert ROM address to CART address
+        or      h
+        ld      h, a        
+
+        ld      a, (FILE_SYSTEM.FILES2x_COUNT)              ; Get file count
+        ret
+
+SET_VERSION1x_FILE_SYSTEM:        
+        ld      hl, (FILE_SYSTEM.DIRECTORY1x_ADDRESS)       ; File system for 1.x ROM
+
+        ld      a, high(CART_START_ADDRESS)                 ; Convert ROM address to CART address
+        or      h
+        ld      h, a        
+
+        ld      a, (FILE_SYSTEM.FILES1x_COUNT)              ; Get file count
+        ret
+
+       ;---------------------------------------------------------------------
+       ; System function handler
+SYSTEM_FUNCTION:
+        ex      af,af'                      ; Get function code to AF
+        push    af                          ; Save it on stack
+
+        and     SYSTEM_FUNCTION_CLASS_MASK  ; Check if it is cassette class
+        cp      CAS_FUNCTION_CLASS
+        jp      z, HANDLE_CAS_FUNCTIONS
+
+        pop     af                          ; Not cassette function, restore function code
+
+NOT_KNOWN_CAS_FUNCTION:
+        ex      af,af'                      ; Restore function code to AF'
+        jp      SYSTEM_FUNCTION_PASS        ; and continue with the original ROM routine
+
+HANDLE_CAS_FUNCTIONS:
+        pop     af                          ; Restore function code
+        push    hl                          ; Save HL
+
+        ; Determine CAS function
+        cp      a, CAS_FN_OPEN
+        jp      z, CAS_OPEN
+
+        cp      a, CAS_FN_CHIN
+        jp      z, CAS_CH_IN
+
+        cp      a, CAS_FN_BKIN
+        jp      z, CAS_BKIN
+
+        cp      a, CAS_FN_CLOSE_RD
+        jp      z, CAS_CLOSE_RD
+
+        pop     hl                          ; Restore HL
+        jp      NOT_KNOWN_CAS_FUNCTION
+
+UNHANDLED_CAS_FUNCTION:
+        pop     hl                          ; Restore HL
+        ex      af,af'                      ; Restore function code to AF'
+        jp      SYSTEM_FUNCTION_PASS        ; and continue with the original ROM routine
+
+        ;*********************************************************************
+        ;* Cassette Functions
+        ;*********************************************************************
+
+        ;---------------------------------------------------------------------
+        ; Casette: Open file
+        ; Input:  DE - file name pointer
+        ; Output: A - status code
+        ;         DE - file name pointer
+CAS_OPEN:
+        ; Check if ROM file is already opened
+        ld      a, (FILE_OPENED_FLAG)
+        or      a
+        jr      z, CHECK_FILE_NAME
+
+        ; file already opened
+        ld      a, CAS_ERR_ALREADY_OPENED
+        jp      CAS_RETURN
+
+CHECK_FILE_NAME:
+        ld      l, e                        ; HL = File name pointer
+        ld      h, d
+        push    de                          ; save file name pointer
+        ld      de, FILE_NAME_BUFFER        ; temporary file name storage
+
+        ; Convert file name to uppercase
+        ld      a,  (hl)                    ; load file name length
+        cp      a, CART_MAX_FILENAME_LENGTH ; maximize file name length
+        jr      c, FILENAME_LENGTH_OK
+        ld      a, CART_MAX_FILENAME_LENGTH
+
+FILENAME_LENGTH_OK:
+        ld      (FILE_NAME_LENGTH), a       ; save file name length
+        ld      b, a                        ; b = file name length
+        inc     hl
+
+FILENAME_TOUPPER_LOOP:
+        ld      a,  (hl)                    ; load character
+        cp      a, 'a'
+        jr      c, STORE_FILENAME_CHARACTER
+        cp      a, 'z' + 1
+        jr      nc, FILENAME_CHECK_ACCENTED_CHARACTERS
+        and     $df                         ; letter to upercase
+        jr      STORE_FILENAME_CHARACTER
+
+FILENAME_CHECK_ACCENTED_CHARACTERS:        
+        cp      a, $90                      ; accented letters
+        jr      c, STORE_FILENAME_CHARACTER
+        cp      a, $99
+        jr      nc, STORE_FILENAME_CHARACTER
+        sub     a, $10
+
+STORE_FILENAME_CHARACTER:
+        ld      (de), a
+        inc     de
+        inc     hl
+        djnz    FILENAME_TOUPPER_LOOP
+
+        ; append '.CAS' if there is no extension
+        ld      a, (FILE_NAME_LENGTH)
+        ld      b, a
+        ld      hl, FILE_NAME_BUFFER
+
+FIND_EXTENSION:
+        ld      a, (hl)
+        inc     hl
+        cp      a, '.'
+        jr      z, FIND_FILE_NAME
+
+        djnz    FIND_EXTENSION
+
+        ; no extension, append '.CAS' if buffer is long enough
+        ld      a, (FILE_NAME_LENGTH)
+        cp      a, CART_MAX_FILENAME_LENGTH - CAS_EXTENSION_LENGTH + 1
+        jr      nc, FIND_FILE_NAME
+
+        ; append extension
+        ld      e, a
+        add     a, CAS_EXTENSION_LENGTH
+        ld      (FILE_NAME_LENGTH), a       ; Update file name length
+
+        ld      a, low(FILE_NAME_BUFFER)    ; Determine append position
+        add     a, e
+        ld      e, a
+        ld      a, 0
+        adc     a, high(FILE_NAME_BUFFER)
+        ld      d, a
+
+        ld      hl, CAS_EXTENSION
+        ld      bc, CAS_EXTENSION_LENGTH
+        ldir                                ; Append extension
+
+FIND_FILE_NAME:
+        ; Find filename in the ROM file system
+        call    GET_FILE_SYSTEM_INFO         ; Get file system address and number of files
+        ld      c, a                         ; Number of files in the file system
+
+COMPARE_FILE_NAMES:
+        push    hl                           ; save file system entry address
+
+        ; get file name length to B and file name buffer to DE
+        ld      a, (FILE_NAME_LENGTH)
+        ld      b, a
+        ld      de, FILE_NAME_BUFFER
+
+COMPARE_FILENAME_CHARACTERS:
+        ld      a, (de)                      ; Compare file name characters
+        cp      (hl)
+
+        jr      nz, CHECK_NEXT_FILE          ; non matching -> next file
+
+        inc     hl
+        inc     de
+
+        djnz    COMPARE_FILENAME_CHARACTERS
+
+        ; file found check extension type (.CAS for CAS file or any other extension)
+        ld      a, (FILE_NAME_LENGTH)
+        ld      b, a
+        ld      hl, FILE_NAME_BUFFER-1
+
+FIND_EXTENSION2:
+        inc     hl
+        ld      a, (hl)
+        cp      a, '.'
+        jr      z, FILE_TYPE_EXTENSION_FOUND    ; extension found
+        
+        djnz    FIND_EXTENSION2  
+        jr      STORE_OTHER_FILE_OPENED         ; no extension found -> other file
+
+FILE_TYPE_EXTENSION_FOUND:
+        ; file name extension found, compare extension with '.CAS'
+        ld      b, CAS_EXTENSION_LENGTH
+        ld      de, CAS_EXTENSION
+COMPARE_FILE_EXTENSION:
+        ld      a, (de)
+        cp      (hl)
+        jr      nz, STORE_OTHER_FILE_OPENED
+        inc     hl
+        inc     de
+        djnz    COMPARE_FILE_EXTENSION
+
+STORE_CAS_FILE_OPENED:
+        ld      a, OPENED_CAS_FILE              ; set file opened flag
+        jr      STORE_FILE_OPENED_FLAG
+
+STORE_OTHER_FILE_OPENED:
+        ld      a, OPENED_OTHER_FILE
+
+STORE_FILE_OPENED_FLAG:
+        ld      (FILE_OPENED_FLAG), a
+
+        ; Copy RAM code
+        ld	hl, RAM_FUNCTIONS_STORAGE
+	ld	de, RAM_FUNCTIONS
+	ld	bc, RAM_FUNCTIONS_CODE_LENGTH
+        ldir
+        
+        ; get address and length
+        pop     bc                           ; Restore file system entry address
+        ld      hl,  FileSystemEntry.FILE_ADDRESS
+        add     hl, bc
+
+        ; store file address in CURRENT_FILE_ADDRESS
+        ld      a, (hl)
+        ld      (CURRENT_FILE_ADDRESS), a
+        inc     hl
+        ld      a, (hl)
+        ld      (CURRENT_FILE_ADDRESS+1), a
+        inc     hl
+
+        ; store page index in CURRENT_PAGE_INDEX
+        ld      a, (hl)
+        ld      (CURRENT_PAGE_INDEX), a
+        inc     hl
+
+        ; store file length in CURRENT_FILE_LENGTH and CAS header
+        ld      a, (hl)
+        ld      (CURRENT_FILE_LENGTH), a
+        ld      (CAS_HEADER.FileLength), a
+        inc     hl
+        ld      a, (hl)
+        ld      (CURRENT_FILE_LENGTH+1), a
+        ld      (CAS_HEADER.FileLength+1), a
+
+        xor     a                           
+        ld      (CURRENT_CAS_HEADER_POS), a ; reset CAS header pos for CH_IN
+        ld      (BUFFER), a                 ; Set non-buffered file
+
+        pop     de                          ; restore file name pointer
+        ld      de, FILE_NAME_LENGTH        ; return back the modified file name (FILE_NAME_BUFFER) and length (FILE_NAME_LENGTH)
+
+        xor     a                           ; no error
+        jp      CAS_RETURN
+        
+CHECK_NEXT_FILE:
+        pop     hl                          ; file system entry address
+        ld      de, FileSystemEntry         ; next entry
+        add     hl, de
+
+        dec     c
+        ld      a,  c
+        or      a
+        jr      nz, COMPARE_FILE_NAMES
+
+        ; file not found
+        pop     de                          ; restore file name pointer
+
+        jp      RET_NO_OPEN_FILE_ERROR
+
+        ld      a, CAS_FN_OPEN              ; restore function code
+        jp      UNHANDLED_CAS_FUNCTION
+
+RET_NO_OPEN_FILE_ERROR:
+        ld      a, CAS_ERR_NO_OPEN_FILE
+        jp      CAS_RETURN
+
+        ;---------------------------------------------------------------------
+        ; Casette: Character input
+        ; Input: -
+        ; Output: C - character
+        ;         A - status code
+CAS_CH_IN:
+        ; check if file is opened
+        ld      a, (FILE_OPENED_FLAG)
+        cp      OPENED_OTHER_FILE               ; Other file byte read
+        jr      z, CAS_CH_IN_OTHER
+        cp      OPENED_CAS_FILE                 
+        jr      z, CAS_IN_CAS_FILE
+
+        jp      RET_NO_OPEN_FILE_ERROR
+
+        ld      a, CAS_FN_CHIN                  ; restore function code to A
+        jp      UNHANDLED_CAS_FUNCTION          ; no file opened  
+
+        ; CAS file hader reading
+CAS_IN_CAS_FILE:
+        ; load file position
+        ld      a,(CURRENT_CAS_HEADER_POS)
+        cp      CASHeader
+        jr      nc, CAS_CH_IN_EOF
+
+        ld      hl, CAS_HEADER              ; Calculate CAS header address (A+CAS_HEADER)
+        add     a, l                        ; A = A+L
+        ld      l, a                        ; L = A+L
+        adc     a, h                        ; A = A+L+H+carry
+        sub     l                           ; A = H+carry
+        ld      h, a                        ; H = H+carry
+
+        ld      c,  (hl)                    ; Load CAS header data
+
+        ld      a, (CURRENT_CAS_HEADER_POS) ; Increment CAS pointer
+        inc     a
+        ld      (CURRENT_CAS_HEADER_POS), a
+
+        jr      CAS_CH_IN_SUCCESS
+
+CAS_CH_IN_OTHER:
+        ; OTHER file reading
+        ; Check remaining file length
+        ld      hl, (CURRENT_FILE_LENGTH)
+        ld      a, l
+        or      h
+        jr      z, CAS_CH_IN_EOF
+
+        ; decrement file length
+        dec     hl
+        ld      (CURRENT_FILE_LENGTH), hl
+
+        ; read one byte
+        ld      hl, (CURRENT_FILE_ADDRESS)
+        call    READ_ONE_PROGRAM_BYTE
+
+        ; increment file address
+        ld      hl, (CURRENT_FILE_ADDRESS)
+        inc     hl
+
+        ; check for page switch
+        ld      a, h
+        or      a, l
+        jr      nz, CAS_CH_IN_STORE_FILE_ADDRESS
+
+        ; page end reached -> switch page
+        ld      a, (CURRENT_PAGE_INDEX)
+        inc     a
+        ld      (CURRENT_PAGE_INDEX), a
+
+        ; update page ROM address
+        ld      hl, PAGE_DATA_START_ADDRESS
+
+CAS_CH_IN_STORE_FILE_ADDRESS:
+        ld      (CURRENT_FILE_ADDRESS), hl
+
+CAS_CH_IN_SUCCESS:
+        xor     a                           ; Success
+        jp      CAS_RETURN
+
+CAS_CH_IN_EOF:
+        ld      a, CAS_ERR_EOF        
+        jp      CAS_RETURN
+
+        ;---------------------------------------------------------------------
+        ; Casette: Block input
+        ; Input: DE - Buffer address
+        ;        BC - Length of the buffer
+        ; Output: A - status code
+CAS_BKIN:
+        ; check if file is opened
+        ld      a, (FILE_OPENED_FLAG)
+        or      a
+        jp      nz, CAS_BKIN_CHECK_FILE_LENGTH
+
+        jp      RET_NO_OPEN_FILE_ERROR
+        
+        ; no file is opened
+        ld      a, CAS_FN_BKIN                  ; restore function code
+        jp      UNHANDLED_CAS_FUNCTION
+
+CAS_BKIN_CHECK_FILE_LENGTH:
+        ; Check remaining file length
+        ld      hl, (CURRENT_FILE_LENGTH)
+        ld      a, l
+        or      h
+        jr      z, CAS_BKIN_EOF
+
+        or      a
+        sbc     hl, bc
+        jr      nc, CAS_BKIN_LOAD
+
+        ; requested length is longer than file length, adjust it
+        ld      bc, (CURRENT_FILE_LENGTH)       ; Bytes to copy
+        ld      hl, 0                           ; No more remaining bytes
+
+CAS_BKIN_LOAD:
+        ld      (CURRENT_FILE_LENGTH), hl       ; Update remaining length
+
+        ld      hl, (CURRENT_FILE_ADDRESS)      ; load file address
+        call    COPY_PROGRAM_TO_RAM
+        ld      (CURRENT_FILE_ADDRESS), hl      ; Update address
+
+        xor     a                               ; Success
+        jp      CAS_RETURN
+
+CAS_BKIN_EOF:
+        ld      a, CAS_ERR_EOF                  ; End of file
+        jp      CAS_RETURN
+
+        ;---------------------------------------------------------------------
+        ; Casette: Close file (read mode)
+        ; Input: -
+        ; Output: A - status code
+CAS_CLOSE_RD:
+        ld      a, (FILE_OPENED_FLAG)
+        or      a
+        jp      nz, CAS_CLOSE_RESET
+
+        xor     a
+        jp      CAS_RETURN
+        
+        jp      RET_NO_OPEN_FILE_ERROR ;TODO
+
+        ld      a, CAS_FN_CLOSE_RD              ; restore function code
+        jp      UNHANDLED_CAS_FUNCTION
+
+CAS_CLOSE_RESET:
+        xor     a
+
+        ; reset file address
+        ld      (CURRENT_FILE_ADDRESS), a
+        ld      (CURRENT_FILE_ADDRESS+1), a
+
+        ; reset file length
+        ld      (CURRENT_FILE_LENGTH), a
+        ld      (CAS_HEADER.FileLength), a
+        ld      (CURRENT_FILE_LENGTH+1), a
+        ld      (CAS_HEADER.FileLength+1), a 
+
+        ; reset file opened
+        ld      (FILE_OPENED_FLAG), a      
+
+        jp      CAS_RETURN
+
+        ;---------------------------------------------------------------------
+        ; Returns from CAS function
+CAS_RETURN:
+        pop     hl                          ; Restore HL
+        or      a                           ; Set flags according to error code
+        jp      SYSTEM_FUNCTION_RETURN
+
+CAS_EXTENSION:
+        db      ".CAS"
+CAS_EXTENSION_LENGTH equ $-CAS_EXTENSION
+
+NANOSD_STRING:
+        db  NANOSD_STRING_END - NANOSD_STRING_START 
+NANOSD_STRING_START:
+        db "NANOSD"   
+NANOSD_STRING_END
+
+        ; *** Other modules ***
+        include "ramfunctions.a80"
+
+        ; *** File system data ***
+FILE_SYSTEM FileSystemStruct

@@ -1,0 +1,6 @@
+.vs/
+*.sdf
+*.suo
+Debug/
+Release/
+test/

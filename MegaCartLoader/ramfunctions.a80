@@ -1,0 +1,402 @@
+        ;---------------------------------------------------------------------
+        ; TVComputer MEGACART ROM Loader Program
+        ;  Routines will be copied to ram
+        ; (c) 2021-2023 Laszlo Arvai
+        ;---------------------------------------------------------------------
+
+        ; ********************************
+        ; * U0 area for data and program *
+        ; ********************************
+RAM_FUNCTIONS_STORAGE:	
+        phase RAM_FUNCTIONS
+ROM_RETURN_ADDRESS      dw      0           ; Return address for 2.x ROM 
+CURRENT_PAGE_INDEX      db      0           ; Used page index 0..3
+CURRENT_FILE_LENGTH     dw      0           ; Remaining length of the currently opened file
+CURRENT_FILE_ADDRESS    dw      0           ; Address of the currently opened file
+CURRENT_CAS_HEADER_POS  db      0           ; Position in CAS header (for CH_IN function)
+
+        ; CAS header struct
+CAS_HEADER  CASHeader
+
+        ; ***********************
+        ; * Initialization code *
+        ; ***********************
+
+        ;---------------------------------------------------------------------
+        ; BASIC initialization and version detection program
+
+BASIC_INITIALIZE:        
+        ; Set memory map to: U0, U1, U2, SYS
+	ld	a, P_U0_U1_U2_SYS
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+		
+	; determine ROM version (1.x or 2.x)
+	ld 	a, (VERSION)                  ; Check for 1.x verion number
+	or      a                             ; version is 0 for 1.x ROM
+	jr 	nz, BASIC_INITIALIZE_END      ; Version is 2.x -> no more action
+		
+	; version is 1.x
+	; initialize BASIC storage area
+	ld	hl, BASIC_STORAGE_AREA
+	push 	hl
+	pop	ix
+	ld	bc, $02ef
+	ld	de, $1701
+	ld	(hl), 0
+	ldir
+
+        ; init VLOMEM and TEXT
+        ld      hl, BASIC_PROGRAM_START
+        ld      (VLOMEM), hl
+        ld      (TEXT), hl
+		
+	; initialize error handlers
+	ld	hl, $fb5b
+	ld 	de, 8
+	ld	bc, $27
+	ldir
+		
+	; call NEW command
+	call	$de10
+
+BASIC_INITIALIZE_END:	
+	; Set memory map to: U0, U1, U2, CART
+	ld	a, P_U0_U1_U2_CART
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+		
+	; return back to the CART
+	ret
+
+        ; **********************
+        ; * RAM File Functions *
+        ; **********************
+
+        ;---------------------------------------------------------------------
+        ; Copies one byte of the TVC program file from Cart ROM to RAM
+        ; Input:  HL - ROM address
+        ; Output: C - byte read from file
+        ; Destroys: HL, BC, DE, A, F
+READ_ONE_PROGRAM_BYTE:
+        ; set page index
+        call    CHANGE_ROM_PAGE
+
+        ; convert ROM address to CART address
+        ld      a, high(CART_START_ADDRESS)
+        or      h
+        ld      h, a
+
+        ; copy one byte
+        ld      c, (hl)
+
+        ; Select ROM PAGE0
+        xor     a
+        ld      (PAGE_SELECT), a            
+
+        ret     
+
+        ;---------------------------------------------------------------------
+        ; Copies TVC program file from Cart ROM to RAM
+        ; Input:  HL - ROM address
+        ;         DE - RAM address
+        ;         BC - Number of bytes to copy
+        ; Output: HL - last byte address of ROM file
+        ;         DE - last address of the RAM
+        ; Destroys: HL, BC, DE, A, F
+COPY_PROGRAM_TO_RAM:
+        ; Check length
+        ld      a, b
+        or      a, c
+        ret     z                               ; Return if length is zero
+
+        ; set page index
+        call    CHANGE_ROM_PAGE
+
+        ; convert ROM address to CART address
+        ld      a, high(CART_START_ADDRESS)
+        or      h
+        ld      h, a
+
+        if DECOMPRESSOR_ENABLED == 0
+        call    NONCOMPRESSED_COPY
+        else
+        call    COMPRESSED_COPY
+        endif
+
+END_PROGRAM_COPY:
+        ; Select ROM PAGE0
+        xor     a
+        ld      (PAGE_SELECT), a            
+
+        ret     
+
+        ;---------------------------------------------------------------------
+        ; Copies bytes without decompressing
+        ; Input:  HL - Source address
+        ;         DE - Destination address
+        ;         BC - Number of bytes to copy
+        if DECOMPRESSOR_ENABLED == 0
+NONCOMPRESSED_COPY:
+PROGRAM_COPY_LOOP:
+        ldi                                     ; copy byte
+
+        ; check remaining bytes
+        ret      po                             ; return if no more bytes left
+
+        ifdef FIX_HW_BUG
+        ; fixes hw bug of the first version of the card
+        ; the page address is altered after reading data from the rom when the read address is in the
+        ; range of paging register. A write to the page register with the correct page number is required
+        ; after each read in this address range.
+        ; check for page switch address space
+        ld      a, h
+        cp      high(PAGE_SELECT)
+        jr      c, PROGRAM_COPY_UPDATE_SOURCE_ADDRESS
+
+        ld      a, (CURRENT_PAGE_INDEX)         ; udpate current page index (because of a hardware design error , the read operation above the address PAGE_SELECT might change the page register)
+        ld      (PAGE_SELECT), a  
+
+PROGRAM_COPY_UPDATE_SOURCE_ADDRESS:
+        endif        
+
+        ; check for page switch
+        ld      a, h
+        or      a, l
+        jr      nz, PROGRAM_COPY_LOOP
+
+        ; page end reached -> switch page
+        ld      a, (CURRENT_PAGE_INDEX)
+        inc     a
+        ld      (CURRENT_PAGE_INDEX), a
+
+        call    CHANGE_ROM_PAGE
+
+        ; update page ROM address
+        ld      hl, PAGE_DATA_START_ADDRESS
+
+        jr      PROGRAM_COPY_LOOP
+
+        endif
+
+	if DECOMPRESSOR_ENABLED != 0
+; -----------------------------------------------------------------------------
+; ZX7 decoder by Einar Saukas & Urusergi
+; "Turbo" version (88 bytes, 25% faster)
+; -----------------------------------------------------------------------------
+; Parameters:
+;   HL: source address (compressed data)
+;   DE: destination address (decompressing)
+; -----------------------------------------------------------------------------
+COMPRESSED_COPY:
+dzx7_turbo:
+        ld      a, $80
+
+dzx7t_copy_byte_loop:
+        ldi                             ; copy literal byte
+        call    UPDATE_SOURCE_ADDRESS
+
+dzx7t_main_loop:
+        add     a, a                    ; check next bit
+        call    z, dzx7t_load_bits      ; no more bits left?
+        jr      nc, dzx7t_copy_byte_loop ; next bit indicates either literal or sequence
+
+; determine number of bits used for length (Elias gamma coding)
+        push    de
+        ld      bc, 1
+        ld      d, b
+dzx7t_len_size_loop:
+        inc     d
+        add     a, a                    ; check next bit
+        call    z, dzx7t_load_bits      ; no more bits left?
+        jr      nc, dzx7t_len_size_loop
+        jp      dzx7t_len_value_start
+
+; determine length
+dzx7t_len_value_loop:
+        add     a, a                    ; check next bit
+        call    z, dzx7t_load_bits      ; no more bits left?
+        rl      c
+        rl      b
+        jr      c, dzx7t_exit           ; check end marker
+dzx7t_len_value_start:
+        dec     d
+        jr      nz, dzx7t_len_value_loop
+        inc     bc                      ; adjust length
+
+; determine offset
+        ld      e, (hl)                 ; load offset flag (1 bit) + offset value (7 bits)
+        inc     hl
+        call    UPDATE_SOURCE_ADDRESS   
+
+        sll     e                       ; defb    $cb, $33                ; opcode for undocumented instruction "SLL E" aka "SLS E"
+        jr      nc, dzx7t_offset_end    ; if offset flag is set, load 4 extra bits
+        add     a, a                    ; check next bit
+        call    z, dzx7t_load_bits      ; no more bits left?
+        rl      d                       ; insert first bit into D
+        add     a, a                    ; check next bit
+        call    z, dzx7t_load_bits      ; no more bits left?
+        rl      d                       ; insert second bit into D
+        add     a, a                    ; check next bit
+        call    z, dzx7t_load_bits      ; no more bits left?
+        rl      d                       ; insert third bit into D
+        add     a, a                    ; check next bit
+        call    z, dzx7t_load_bits      ; no more bits left?
+        ccf
+        jr      c, dzx7t_offset_end
+        inc     d                       ; equivalent to adding 128 to DE
+dzx7t_offset_end:
+        rr      e                       ; insert inverted fourth bit into E
+
+; copy previous sequence
+        ex      (sp), hl                ; store source, restore destination
+        push    hl                      ; store destination
+        sbc     hl, de                  ; HL = destination - offset - 1
+        pop     de                      ; DE = destination
+        ldir
+dzx7t_exit:
+        pop     hl                      ; restore source address (compressed data)
+        jp      nc, dzx7t_main_loop
+
+dzx7t_load_bits:
+        ld      a, (hl)                 ; load another group of 8 bits
+        inc     hl
+        call    UPDATE_SOURCE_ADDRESS
+        rla
+        ret
+
+UPDATE_SOURCE_ADDRESS:
+        push    af
+
+        ifdef FIX_HW_BUG
+        ; fixes hw bug of the first version of the card
+        ; the page address is altered after reading data from the rom when the read address is in the
+        ; range of paging register. A write to the page register with the correct page number is required
+        ; after each read in this address range.
+        ; check for page switch address space
+        ld      a, h
+        cp      high(PAGE_SELECT)
+        jr      c, UPDATE_SOURCE_ADDRESS_CHECK_FOR_PAGE_SWITCH
+
+        ld      a, (CURRENT_PAGE_INDEX)         ; udpate current page index (because of a hardware design error , the read operation above the address PAGE_SELECT might change the page register)
+        ld      (PAGE_SELECT), a                ; restore page register address
+
+        pop     af
+        ret
+
+        endif
+
+UPDATE_SOURCE_ADDRESS_CHECK_FOR_PAGE_SWITCH:
+        ; check for page switch
+        ld      a, h
+        or      a, l
+        jr      nz, UPDATE_SOURCE_ADDRESS_RETURN
+
+        ; page end reached -> switch page
+        ld      a, (CURRENT_PAGE_INDEX)         ; Increment page index
+        inc     a
+        ld      (CURRENT_PAGE_INDEX), a
+        ld      (PAGE_SELECT), a                ; update current page index
+
+        ; update page ROM address
+        ld      hl, PAGE_DATA_START_ADDRESS
+
+UPDATE_SOURCE_ADDRESS_RETURN:
+        pop     af
+        ret 
+
+	endif   
+               
+        ;---------------------------------------------------------------------
+        ; Changes ROM page according current page index (CURRENT_PAGE_INDEX) variable
+CHANGE_ROM_PAGE:
+        push    af
+
+        ; change ROM page
+        ld      a, (CURRENT_PAGE_INDEX)
+        ld      (PAGE_SELECT), a            
+
+        pop     af
+        ret
+
+        ;---------------------------------------------------------------------
+        ; Starts Basic program for 1.x ROM
+BASIC_RUN_1x:
+        ; Set memory map to: U0, U1, U2, SYS
+	ld	a, P_U0_U1_U2_SYS
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+		
+	; enable interrupts
+	ei
+		
+	; execute RUN command
+	ld	hl, (TEXT)
+	jp	$de23
+
+BASIC_RETURN_1x:
+        ; Set memory map to: U0, U1, U2, SYS
+	ld	a, P_U0_U1_U2_SYS
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+
+        jp      $c322                           ; return form cart to the SYSTEM ROM
+
+RAM_FUNCTIONS_CODE_LENGTH: equ $-RAM_FUNCTIONS
+	dephase
+
+        ; ************************
+        ; * System function call *
+        ; ************************
+
+SYSTEM_FUNCTION_CALLER_STORAGE:
+        phase SYSTEM_FUNCTION_CALLER
+
+        ; *** System function caller
+        ex      (sp),hl                     ; Get return address
+        ld      a,(hl)                      ; Get function code
+        inc     hl                          ; Increment return address
+        ex      (sp),hl                     ; Store return address
+        ex      af,af'                      ; Save fuction code to AF'
+        push    af                          ; and store original AF' to stack
+
+        ld      a,(P_SAVE)                  ; Save memory pageing settings
+        push    af                          ; to stack
+
+        ld      A,P_U0_U1_U2_CART           ; Set paging to U0-U1-U2-CART
+        ld      (P_SAVE),a
+        out     (PAGE_REG),a
+
+        jp      SYSTEM_FUNCTION             ; Call New System Function
+
+SYSTEM_FUNCTION_RETURN:
+        ex      af,af'
+        pop     af
+
+        ld      (P_SAVE),a                  ; Restore paging
+        out     (PAGE_REG),a
+        pop     af
+        ex      af,af'
+        ret
+
+SYSTEM_FUNCTION_CALLER_CODE_LENGTH equ $-SYSTEM_FUNCTION_CALLER
+        dephase
+
+        ; ************************
+        ; * System function pass *
+        ; ************************
+
+SYSTEM_FUNCTION_PASS_STORAGE:
+        phase SYSTEM_FUNCTION_PASS
+
+        ;---------------------------------------------------------------------
+        ; Passing System Function call to ROM
+        ld      a,P_U0_U1_U2_SYS            ; Page in ROM
+        ld      (P_SAVE),a
+        out     (PAGE_REG),a
+
+SYSTEM_FUNCTION_CHAIN_ADDRESS:
+        jp      0                           ; Jump to ROM (address will be updated when code is copied to RAM)
+
+SYSTEM_FUNCTION_PASS_CODE_LENGTH equ $-SYSTEM_FUNCTION_PASS
+        dephase

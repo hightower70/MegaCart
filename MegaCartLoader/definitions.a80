@@ -1,0 +1,128 @@
+        ;---------------------------------------------------------------------
+        ; TVComputer MEGACART ROM Loader Program
+        ;  Label definitions
+        ; (c) 2021-2023 Laszlo Arvai
+        ;---------------------------------------------------------------------
+
+        ; Cartridge start memory address
+CART_START_ADDRESS      equ $C000
+
+
+        ; System memory definitions
+P_SAVE                  equ $0003
+FILE_TYPE               equ $0bf3
+BASIC_STORAGE_AREA      equ $1700
+VLOMEM                  equ $1720
+TEXT                    equ $1722
+BASIC_PROGRAM_START     equ $19EF
+SYSTEM_FUNCTION_PASS    equ $0b95
+BASIC_FLAG	        equ $0EB6
+VERSION                 equ $0EB7
+FILE_OPENED_FLAG        equ $0EB8
+BUFFER                  equ $0b6b
+FILE_NAME_LENGTH        equ $0bf4
+FILE_NAME_BUFFER        equ $0bf5
+CARD_MEM_AREA           equ $0040 ; Expansion card ID and buffer area in the memory
+CARD_MEM_AREA_LENGTH    equ $0030 ; Card memory length
+CARD_NUMBER             equ 4     ; Expansion card number
+NANOSD_IT_VECTOR_SAVE   equ $0000 ; IT vector save address of the nanoSD
+NANOSD_IT_VECTOR_ADDR   equ $003e
+
+        ; NanoSD related definitions
+KEY_PRESS_IDX           equ $1FFB ; Keyboard injection index address
+
+        ; RAM (U0) addresses
+RAM_FUNCTIONS           equ $0c05     ; Buffered input file, buffer area is used for ROM file operation
+
+        ; System call code addresses
+SYSTEM_FUNCTION_CALLER                  EQU $0B23
+SYSTEM_FUNCTION_ROM_ENTRY_ADDRESS       EQU $0B35
+
+        ; Paging register address
+        if MULTICART == 1
+PAGE_SELECT             equ $c000                 ; Page select address for MultiCart
+PAGE_DATA_START_ADDRESS equ $c00b
+        else
+PAGE_SELECT             equ $fc00                 ; Page select address for MegaCart
+PAGE_DATA_START_ADDRESS equ $c008
+        endif
+
+ALTERNATE_PAGE_SELECT   equ $E000       ; Alternate page select port address for MultiCart
+
+        ; File name constants
+CART_MAX_FILENAME_LENGTH equ     16
+
+        ; System types
+BUFFERED_FILE   equ $11
+
+        ; File types
+NO_OPENED_FILE          equ     $00
+OPENED_CAS_FILE         equ     $01
+OPENED_OTHER_FILE       equ     $02
+
+        ; System function codes and masks
+SYSTEM_FUNCTION_CLASS_MASK              equ $70
+SYSTEM_FUNCTION_DIRECTION_MASK          equ $80
+CAS_FUNCTION_CLASS                      equ $50
+CAS_LAST_FUNCTION_CODE                  equ $0b
+
+        ; Register definitions
+PAGE_REG        EQU $02
+
+        ; Memory paging constants
+P_U0_U1_U2_SYS   EQU $70
+P_U0_U1_U2_CART  EQU $30
+P_SYS_U1_U2_CART EQU $20
+
+        ; Version numbers
+SW_MAJOR_VERSION EQU 0
+SW_MINOR_VERSION EQU 3
+
+        ; Casette functions
+CAS_FN_CHIN     EQU $D1
+CAS_FN_CHOUT    EQU $51
+CAS_FN_BKIN     EQU $D2
+CAS_FN_BKOUT    EQU $52
+CAS_FN_OPEN     EQU $D3
+CAS_FN_CRTE     EQU $53
+CAS_FN_CLOSE_RD EQU $D4
+CAS_FN_CLOSE_WR EQU $54
+CAS_FN_VERIFY   EQU $D5
+
+        ; Casette function error codes
+CAS_ERR_EOF             EQU $EC
+CAS_ERR_ALREADY_OPENED  EQU $EB
+CAS_ERR_CRC             EQU $EA
+CAS_ERR_NO_OPEN_FILE    EQU $E9
+CAS_ERR_VERIFY          EQU $E8
+CAS_ERR_INTERNAL        EQU $E7
+CAS_ERR_PROTECTION      EQU $E6
+CAS_ERR_BLOCK_NUMBER    EQU $E5
+
+
+        ; File system struct
+        struct FileSystemStruct
+FILES1x_COUNT       db 0                    ; Number of files in the image for 1.x TVC ROM version
+FILES2x_COUNT       db 0                    ; Number of files in the image for 2.x TVC ROM version
+DIRECTORY1x_ADDRESS dw 0                    ; Address of the directory for 1.x TVC ROM version
+DIRECTORY2x_ADDRESS dw 0	            ; Address of the directory for 1.x TVC ROM version
+FILES_ADDRESS       dw 0	            ; Address of the file data
+        ends
+
+        ; File system entry
+        struct FileSystemEntry
+FILE_NAME       ds CART_MAX_FILENAME_LENGTH, 0
+FILE_ADDRESS    dw 0
+FILE_PAGE       db 0
+FILE_LENGTH     dw 0
+        ends
+
+        ; CAS header struct
+        struct CASHeader
+Zero            db 0    ; 0
+FileType        db 1    ; Program type: 0x01 - Program file, 0x00 - ASCII file
+FileLength      dw 0    ; Length of the file
+Autorun         db $ff  ; Autostart: 0xff, no autostart: 0x00
+Zeros           ds 10, 0; Zero
+Version         db      ; Version
+        ends

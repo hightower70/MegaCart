@@ -1,0 +1,37 @@
+{
+        // See https://go.microsoft.com/fwlink/?LinkId=733558
+        // for the documentation about the tasks.json format
+        "version": "2.0.0",
+        "command": "${workspaceRoot}\\sjasmplus.exe",
+        "type": "shell",
+        "args": [
+            "-Wno-rdlow",
+            "--raw=megacart.bin",
+            "--syntax=abf",
+            "--lst=megacart.lst",
+            "--lstlab",
+            "--exp=megacart.exp",
+            "-DDECOMPRESSOR_ENABLED=0",
+            "-DMULTICART=0",
+            "megacart.a80"
+        ],
+        "options": {
+            "cwd": "${workspaceRoot}"
+        },
+        "presentation": {
+            "echo": true,
+            "reveal": "always",
+            "focus": false,
+            "panel": "shared"
+        },
+        "tasks": [
+            {
+                "label": "all",
+                "problemMatcher": "$errmatcher-sjasmplus",
+                "group": {
+                    "kind": "build",
+                    "isDefault": true
+                }
+            }
+        ]
+    }
