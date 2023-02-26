@@ -1,0 +1,35 @@
+        ;---------------------------------------------------------------------
+        ; TVComputer MEGACART ROM Unmount Program
+        ;  Label definitions
+        ; (c) 2023 Laszlo Arvai
+        ;---------------------------------------------------------------------
+
+; Memory start address for the program
+PROGRAM_START_ADDRESS   equ 6639
+
+        ; System memory definitions
+P_SAVE                  equ $0003
+BASIC_PROGRAM_START     equ $19EF
+
+        ; Cartridge memory addresses
+ID_STRING_ADDRESS       equ $c00e
+
+        ; RAM (U0) addresses
+RAM_FUNCTIONS           equ $0c05     ; Buffered input file, buffer area is used for ROM file operation
+
+        ; System call code addresses
+SYSTEM_FUNCTION_PASS                    equ $0b95
+SYSTEM_FUNCTION_CALLER                  equ $0B23
+SYSTEM_FUNCTION_ROM_ENTRY_ADDRESS       equ $0B35
+SYSTEM_FUNCTION_CHAIN_ADDRESS           equ $0b9d
+
+        ; Register definitions
+PAGE_REG        EQU $02
+
+        ; Memory paging constants
+P_U0_U1_U2_SYS   EQU $70
+P_U0_U1_U2_CART  EQU $30
+P_SYS_U1_U2_CART EQU $20
+
+        ; Function codes (for RST $30)
+VID_BKOUT       equ $22

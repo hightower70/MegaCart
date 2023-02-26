@@ -1,0 +1,263 @@
+# file opened: mcunmount.a80
+  1   0000                      ;---------------------------------------------------------------------
+  2   0000                      ; TVComputer MULTICART ROM Unmount Program
+  3   0000                      ; (c) 2023 Laszlo Arvai
+  4   0000                      ;---------------------------------------------------------------------
+  5   0000                      .include "definitions.a80"
+# file opened: definitions.a80
+  1+  0000                      ;---------------------------------------------------------------------
+  2+  0000                      ; TVComputer MEGACART ROM Unmount Program
+  3+  0000                      ;  Label definitions
+  4+  0000                      ; (c) 2023 Laszlo Arvai
+  5+  0000                      ;---------------------------------------------------------------------
+  6+  0000
+  7+  0000              ; Memory start address for the program
+  8+  0000              PROGRAM_START_ADDRESS   equ 6639
+  9+  0000
+ 10+  0000                      ; System memory definitions
+ 11+  0000              P_SAVE                  equ $0003
+ 12+  0000              BASIC_PROGRAM_START     equ $19EF
+ 13+  0000
+ 14+  0000                      ; Cartridge memory addresses
+ 15+  0000              ID_STRING_ADDRESS       equ $c00e
+ 16+  0000
+ 17+  0000                      ; RAM (U0) addresses
+ 18+  0000              RAM_FUNCTIONS           equ $0c05     ; Buffered input file, buffer area is used for ROM file operation
+ 19+  0000
+ 20+  0000                      ; System call code addresses
+ 21+  0000              SYSTEM_FUNCTION_PASS                    equ $0b95
+ 22+  0000              SYSTEM_FUNCTION_CALLER                  equ $0B23
+ 23+  0000              SYSTEM_FUNCTION_ROM_ENTRY_ADDRESS       equ $0B35
+ 24+  0000              SYSTEM_FUNCTION_CHAIN_ADDRESS           equ $0b9d
+ 25+  0000
+ 26+  0000                      ; Register definitions
+ 27+  0000              PAGE_REG        EQU $02
+ 28+  0000
+ 29+  0000                      ; Memory paging constants
+ 30+  0000              P_U0_U1_U2_SYS   EQU $70
+ 31+  0000              P_U0_U1_U2_CART  EQU $30
+ 32+  0000              P_SYS_U1_U2_CART EQU $20
+ 33+  0000
+ 34+  0000                      ; Function codes (for RST $30)
+ 35+  0000              VID_BKOUT       equ $22
+ 36+  0000
+# file closed: definitions.a80
+  6   0000
+  7   0000                      org     PROGRAM_START_ADDRESS
+  8   19EF
+  9   19EF 0F 01 00 58          db      $0f, $01, $00, $58, $9a, "USR", $96, "6693", $95, $ff, $00                                         ; 2 X=USR(6722)
+  9   19F3 9A 55 53 52
+  9   19F7 96 36 36 39
+  9   19FB 33 95 FF 00
+ 10   19FF
+ 11   19FF                      ; BASIC SYMBOL TABLE
+ 12   19FF 00 00 00...          ds      38                              ; Storage for BASIC symbol table
+ 13   1A25
+ 14   1A25                      ; Program start
+ 15   1A25
+ 16   1A25                      ; Detect MultiCart
+ 17   1A25
+ 18   1A25                      ; Set memory map to: U0, U1, U2, CART
+ 19   1A25 3E 30                ld      a, P_U0_U1_U2_CART
+ 20   1A27 32 03 00             ld      (P_SAVE), a
+ 21   1A2A D3 02                out     (PAGE_REG), a
+ 22   1A2C
+ 23   1A2C 21 0E C0             ld      hl, ID_STRING_ADDRESS
+ 24   1A2F 11 83 1A             ld      de, MULTICART_STRING
+ 25   1A32 06 09                ld      b, MULTICART_STRING_LENGTH
+ 26   1A34
+ 27   1A34                      ; compare ID string
+ 28   1A34              CHECK_ID_STRING:
+ 29   1A34 1A                   ld      a, (de)
+ 30   1A35 BE                   cp      (hl)
+ 31   1A36 20 3A                jr      nz, DISPLAY_MULTICART_NOT_FOUND
+ 32   1A38
+ 33   1A38 23                   inc     hl
+ 34   1A39 13                   inc     de
+ 35   1A3A
+ 36   1A3A 10 F8                djnz   CHECK_ID_STRING
+ 37   1A3C
+ 38   1A3C                      ; Multicart found
+ 39   1A3C
+ 40   1A3C                      ; restore paging
+ 41   1A3C 3E 70                ld      a, P_U0_U1_U2_SYS
+ 42   1A3E 32 03 00             ld      (P_SAVE), a
+ 43   1A41 D3 02                out     (PAGE_REG), a
+ 44   1A43
+ 45   1A43                      ; check zero page code
+ 46   1A43 11 23 0B             ld      de, SYSTEM_FUNCTION_CALLER
+ 47   1A46 21 C5 1A             ld      hl, SYSTEM_FUNCTION_CALLER_STORAGE
+ 48   1A49 06 11                ld      b, SYSTEM_FUNCTION_CALLER_CODE_LENGTH
+ 49   1A4B
+ 50   1A4B              CHECK_ZERO_PAGE_CODE:
+ 51   1A4B 1A                   ld      a, (de)
+ 52   1A4C BE                   cp      (hl)
+ 53   1A4D 20 23                jr      nz, DISPLAY_MULTICART_NOT_FOUND
+ 54   1A4F
+ 55   1A4F 23                   inc     hl
+ 56   1A50 13                   inc     de
+ 57   1A51
+ 58   1A51 10 F8                djnz    CHECK_ZERO_PAGE_CODE
+ 59   1A53
+ 60   1A53                      ; zero page code is ok
+ 61   1A53 2A 9D 0B             ld      hl, (SYSTEM_FUNCTION_CHAIN_ADDRESS)      ; save original ROM jump address
+ 62   1A56 E5                   push    hl
+ 63   1A57
+ 64   1A57                      ; revert back the code
+ 65   1A57 F3                   di
+ 66   1A58
+ 67   1A58 21 D6 1A             ld      hl, ORIGINAL_SYSTEM_FUNCTION_CALLER_STORAGE
+ 68   1A5B 11 23 0B             ld      de, SYSTEM_FUNCTION_CALLER
+ 69   1A5E 01 1E 00             ld      bc, ORIGINAL_SYSTEM_FUNCTION_CALLER_LENGTH
+ 70   1A61
+ 71   1A61 ED B0                ldir
+ 72   1A63
+ 73   1A63                      ; restore jump address
+ 74   1A63 E1                   pop     hl
+ 75   1A64 22 35 0B             ld      (SYSTEM_FUNCTION_JUMP+1), hl
+ 76   1A67
+ 77   1A67 FB                   ei
+ 78   1A68
+ 79   1A68                      ; display message
+ 80   1A68 11 AD 1A             ld      de, MULTICART_UNMOUNTED
+ 81   1A6B 0E 18                ld      c, MULTICART_UNMOUNTED_LENGTH
+ 82   1A6D 06 00                ld      b, 0
+ 83   1A6F
+ 84   1A6F F7                   rst     $30
+ 85   1A70 22                   db      VID_BKOUT
+ 86   1A71
+ 87   1A71 C9                   ret
+ 88   1A72
+ 89   1A72              DISPLAY_MULTICART_NOT_FOUND:
+ 90   1A72                      ; restore paging
+ 91   1A72 3E 70                ld      a, P_U0_U1_U2_SYS
+ 92   1A74 32 03 00             ld      (P_SAVE), a
+ 93   1A77 D3 02                out     (PAGE_REG), a
+ 94   1A79
+ 95   1A79                      ; display error message
+ 96   1A79 11 8C 1A             ld      de, MULTICART_NOT_FOUND
+ 97   1A7C 0E 21                ld      c, MULTICART_NOT_FOUND_LENGTH
+ 98   1A7E 06 00                ld      b, 0
+ 99   1A80
+100   1A80 F7                   rst     $30
+101   1A81 22                   db      VID_BKOUT
+102   1A82
+103   1A82                      ; return
+104   1A82 C9                   ret
+105   1A83
+106   1A83              MULTICART_STRING:
+107   1A83 4D 55 4C 54          db      "MULTICART"
+107   1A87 49 43 41 52
+107   1A8B 54
+108   1A8C              MULTICART_STRING_LENGTH equ $ - MULTICART_STRING
+109   1A8C
+110   1A8C
+111   1A8C              MULTICART_NOT_FOUND:
+112   1A8C 4D 75 6C 74          db      "MultiCart not found. Exiting...", $0d, $0a
+112   1A90 69 43 61 72
+112   1A94 74 20 6E 6F
+112   1A98 74 20 66 6F
+112   1A9C 75 6E 64 2E
+112   1AA0 20 45 78 69
+112   1AA4 74 69 6E 67
+112   1AA8 2E 2E 2E 0D
+112   1AAC 0A
+113   1AAD              MULTICART_NOT_FOUND_LENGTH      equ $ - MULTICART_NOT_FOUND
+114   1AAD
+115   1AAD              MULTICART_UNMOUNTED:
+116   1AAD 4D 75 6C 74          db      "MultiCart unmounted...", $0d, $0a
+116   1AB1 69 43 61 72
+116   1AB5 74 20 75 6E
+116   1AB9 6D 6F 75 6E
+116   1ABD 74 65 64 2E
+116   1AC1 2E 2E 0D 0A
+117   1AC5              MULTICART_UNMOUNTED_LENGTH      equ $ - MULTICART_UNMOUNTED
+118   1AC5
+119   1AC5                      ; *************************************
+120   1AC5                      ; * MultiCart  System function caller *
+121   1AC5                      ; *************************************
+122   1AC5
+123   1AC5              SYSTEM_FUNCTION_CALLER_STORAGE:
+124   1AC5                      phase SYSTEM_FUNCTION_CALLER
+125   0B23
+126   0B23                      ; *** System function caller
+127   0B23 E3                   ex      (sp),hl                     ; Get return address
+128   0B24 7E                   ld      a,(hl)                      ; Get function code
+129   0B25 23                   inc     hl                          ; Increment return address
+130   0B26 E3                   ex      (sp),hl                     ; Store return address
+131   0B27 08                   ex      af,af'                      ; Save fuction code to AF'
+132   0B28 F5                   push    af                          ; and store original AF' to stack
+133   0B29
+134   0B29 3A 03 00             ld      a,(P_SAVE)                  ; Save memory pageing settings
+135   0B2C F5                   push    af                          ; to stack
+136   0B2D
+137   0B2D 3E 30                ld      A,P_U0_U1_U2_CART           ; Set paging to U0-U1-U2-CART
+138   0B2F 32 03 00             ld      (P_SAVE),a
+139   0B32 D3 02                out     (PAGE_REG),a
+140   0B34
+141   0B34              SYSTEM_FUNCTION_CALLER_CODE_LENGTH equ $-SYSTEM_FUNCTION_CALLER
+142   0B34                      dephase
+143   1AD6
+144   1AD6                      ; ***********************************
+145   1AD6                      ; * Original System function caller *
+146   1AD6                      ; ***********************************
+147   1AD6
+148   1AD6              ORIGINAL_SYSTEM_FUNCTION_CALLER_STORAGE:
+149   1AD6                      phase SYSTEM_FUNCTION_CALLER
+150   0B23
+151   0B23 E3                   ex      (sp), hl
+152   0B24 7E                   ld      a, (hl)
+153   0B25 23                   inc     hl
+154   0B26 E3                   ex     (sp), hl
+155   0B27 08                   ex      af, af'
+156   0B28 F5                   push    af
+157   0B29 3A 03 00             ld      a, ($0003)
+158   0B2C F5                   push    af
+159   0B2D 3E 70                ld      a, $70
+160   0B2F 32 03 00             ld      ($0003), a
+161   0B32 D3 02                out     ($02), a
+162   0B34              SYSTEM_FUNCTION_JUMP:
+163   0B34 C3 63 C3             jp      $c363
+164   0B37
+165   0B37 08                   ex      af , af'
+166   0B38 F1                   pop     af
+167   0B39 32 03 00             ld      ($0003), a
+168   0B3C D3 02                out     ($02), a
+169   0B3E F1                   pop     af
+170   0B3F 08                   ex      af, af'
+171   0B40 C9                   ret
+172   0B41
+173   0B41              ORIGINAL_SYSTEM_FUNCTION_CALLER_LENGTH equ $-SYSTEM_FUNCTION_CALLER
+174   0B41                      dephase
+# file closed: mcunmount.a80
+
+Value    Label
+------ - -----------------------------------------------------------
+0x0021   MULTICART_NOT_FOUND_LENGTH
+0x1A8C   MULTICART_NOT_FOUND
+0x0018   MULTICART_UNMOUNTED_LENGTH
+0x1AAD   MULTICART_UNMOUNTED
+0x0B34   SYSTEM_FUNCTION_JUMP
+0x001E   ORIGINAL_SYSTEM_FUNCTION_CALLER_LENGTH
+0x1AD6   ORIGINAL_SYSTEM_FUNCTION_CALLER_STORAGE
+0x1A4B   CHECK_ZERO_PAGE_CODE
+0x0011   SYSTEM_FUNCTION_CALLER_CODE_LENGTH
+0x1AC5   SYSTEM_FUNCTION_CALLER_STORAGE
+0x1A72   DISPLAY_MULTICART_NOT_FOUND
+0x1A34   CHECK_ID_STRING
+0x0009   MULTICART_STRING_LENGTH
+0x1A83   MULTICART_STRING
+0x0022   VID_BKOUT
+0x0020 X P_SYS_U1_U2_CART
+0x0030   P_U0_U1_U2_CART
+0x0070   P_U0_U1_U2_SYS
+0x0002   PAGE_REG
+0x0B9D   SYSTEM_FUNCTION_CHAIN_ADDRESS
+0x0B35 X SYSTEM_FUNCTION_ROM_ENTRY_ADDRESS
+0x0B23   SYSTEM_FUNCTION_CALLER
+0x0C05 X RAM_FUNCTIONS
+0xC00E   ID_STRING_ADDRESS
+0x19EF X BASIC_PROGRAM_START
+0x0003   P_SAVE
+0x19EF   PROGRAM_START_ADDRESS
+0x0B95 X SYSTEM_FUNCTION_PASS

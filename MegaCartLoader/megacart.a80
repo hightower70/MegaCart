@@ -13,15 +13,17 @@
 ENTRY:
         ; entry code -> change to page 0 (the page change code is repeated at the begninning of all pages)
         xor     a
-        if MULTICART == 1
-        ld      (ALTERNATE_PAGE_SELECT), a      ; Change to Page0
-        ld      (PAGE_SELECT), a                ; Change to Page0
-        jp      MAIN                            ; Jump to initialization
-        db      "MULTICART"
-        else
+        if MULTICART == 0
         ld      (PAGE_SELECT), a                ; Change to Page0
         jp      MAIN                            ; Jump to initialization
         db      "MEGACART"
+        endif
+
+        if MULTICART != 0
+        ld      (ALTERNATE_PAGE_SELECT), a      ; Alternate Change to Page0
+        ld      (PAGE_SELECT), a                ; Change to Page0
+        jp      MAIN                            ; Jump to initialization
+        db      "MULTICART"
         endif
 
         db      SW_MAJOR_VERSION                ; Major version number
@@ -527,6 +529,18 @@ CAS_CH_IN_OTHER:
         or      h
         jr      z, CAS_CH_IN_EOF
 
+        if DECOMPRESSOR_ENABLED != 0
+
+        ; check uncompressed byte count
+        ld      a, (CURRENT_CAS_HEADER_POS)
+        cp      CHIN_UNCOMPRESSED_BYTE_COUNT
+        jr      nc, CAS_CH_IN_EOF
+
+        inc     a
+        ld      (CURRENT_CAS_HEADER_POS), a
+
+        endif
+
         ; decrement file length
         dec     hl
         ld      (CURRENT_FILE_LENGTH), hl
@@ -598,10 +612,64 @@ CAS_BKIN_CHECK_FILE_LENGTH:
 CAS_BKIN_LOAD:
         ld      (CURRENT_FILE_LENGTH), hl       ; Update remaining length
 
+        ; check the remaining uncompressed bytes 
+        if DECOMPRESSOR_ENABLED != 0
+CAS_BKIN_COPY_UNCOMPRESSED_BYTES:
+        ld      a, (CURRENT_CAS_HEADER_POS)     ; check remaining uncompressed byte count (stored in CURRENT_CAS_HEADER_POS)
+        cp      CHIN_UNCOMPRESSED_BYTE_COUNT
+        jr      nc, NO_MORE_UNCOMPRESSED_BYTE
+
+        inc     a
+        ld      (CURRENT_CAS_HEADER_POS), a
+        
+        push    bc                              ; save remaining bytes
+
+        ; read one byte
+        ld      hl, (CURRENT_FILE_ADDRESS)
+        call    READ_ONE_PROGRAM_BYTE
+        ld      a, c
+        ld      (de), a                         ; store byte
+        inc     de                              ; next destination address
+
+        ; increment file address
+        ld      hl, (CURRENT_FILE_ADDRESS)      ; next source address
+        inc     hl
+
+        ; check for page switch
+        ld      a, h
+        or      a, l
+        jr      nz, CAS_BK_IN_STORE_FILE_ADDRESS
+
+        ; page end reached -> switch page
+        ld      a, (CURRENT_PAGE_INDEX)
+        inc     a
+        ld      (CURRENT_PAGE_INDEX), a
+
+        ; update page ROM address
+        ld      hl, PAGE_DATA_START_ADDRESS
+
+CAS_BK_IN_STORE_FILE_ADDRESS:
+        ld      (CURRENT_FILE_ADDRESS), hl
+
+        ; decrement file length
+        pop     bc
+        dec     bc
+
+        ld      a, c                            ; check remaining byte count
+        or      a, b
+        jr      z, CAS_BKIN_OK                  ; no more bytes
+
+        jr      CAS_BKIN_COPY_UNCOMPRESSED_BYTES;copy next byte
+
+        ; copy compressed bytes
+NO_MORE_UNCOMPRESSED_BYTE:
+        endif
+
         ld      hl, (CURRENT_FILE_ADDRESS)      ; load file address
         call    COPY_PROGRAM_TO_RAM
         ld      (CURRENT_FILE_ADDRESS), hl      ; Update address
 
+CAS_BKIN_OK:
         xor     a                               ; Success
         jp      CAS_RETURN
 

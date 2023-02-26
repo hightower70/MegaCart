@@ -6,14 +6,12 @@
         "type": "shell",
         "args": [
             "-Wno-rdlow",
-            "--raw=megacart.bin",
+            "--raw=mcunmount.bin",
             "--syntax=abf",
-            "--lst=megacart.lst",
+            "--lst=mcunmountlst",
             "--lstlab",
-            "--exp=megacart.exp",
-            "-DDECOMPRESSOR_ENABLED=1",
-            "-DMULTICART=0",
-            "megacart.a80"
+            "--exp=mcunmount.exp",
+            "mcunmount.a80"
         ],
         "options": {
             "cwd": "${workspaceRoot}"

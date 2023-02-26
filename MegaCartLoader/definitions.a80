@@ -9,19 +9,23 @@ CART_START_ADDRESS      equ $C000
 
 
         ; System memory definitions
-P_SAVE                  equ $0003
-FILE_TYPE               equ $0bf3
-BASIC_STORAGE_AREA      equ $1700
-VLOMEM                  equ $1720
-TEXT                    equ $1722
-BASIC_PROGRAM_START     equ $19EF
-SYSTEM_FUNCTION_PASS    equ $0b95
-BASIC_FLAG	        equ $0EB6
-VERSION                 equ $0EB7
-FILE_OPENED_FLAG        equ $0EB8
-BUFFER                  equ $0b6b
-FILE_NAME_LENGTH        equ $0bf4
-FILE_NAME_BUFFER        equ $0bf5
+P_SAVE                                  equ $0003
+FILE_TYPE                               equ $0bf3
+BASIC_STORAGE_AREA                      equ $1700
+VLOMEM                                  equ $1720
+TEXT                                    equ $1722
+BASIC_PROGRAM_START                     equ $19EF
+SYSTEM_FUNCTION_CALLER                  equ $0B23
+SYSTEM_FUNCTION_ROM_ENTRY_ADDRESS       equ $0B35
+SYSTEM_FUNCTION_PASS                    equ $0b95
+BASIC_FLAG	                        equ $0EB6
+VERSION                                 equ $0EB7
+FILE_OPENED_FLAG                        equ $0EB8
+BUFFER                                  equ $0b6b
+FILE_NAME_LENGTH                        equ $0bf4
+FILE_NAME_BUFFER                        equ $0bf5
+
+        ; Expansion card related definitions
 CARD_MEM_AREA           equ $0040 ; Expansion card ID and buffer area in the memory
 CARD_MEM_AREA_LENGTH    equ $0030 ; Card memory length
 CARD_NUMBER             equ 4     ; Expansion card number
@@ -32,25 +36,23 @@ NANOSD_IT_VECTOR_ADDR   equ $003e
 KEY_PRESS_IDX           equ $1FFB ; Keyboard injection index address
 
         ; RAM (U0) addresses
-RAM_FUNCTIONS           equ $0c05     ; Buffered input file, buffer area is used for ROM file operation
-
-        ; System call code addresses
-SYSTEM_FUNCTION_CALLER                  EQU $0B23
-SYSTEM_FUNCTION_ROM_ENTRY_ADDRESS       EQU $0B35
+RAM_FUNCTIONS           equ $0c05 ; Buffered input file, buffer area is used for ROM file operation
 
         ; Paging register address
-        if MULTICART == 1
-PAGE_SELECT             equ $c000                 ; Page select address for MultiCart
-PAGE_DATA_START_ADDRESS equ $c00b
-        else
-PAGE_SELECT             equ $fc00                 ; Page select address for MegaCart
-PAGE_DATA_START_ADDRESS equ $c008
+        if MULTICART == 0
+PAGE_SELECT             equ $fc00 ; Page select address for MegaCart
+PAGE_DATA_START_ADDRESS equ $c008 ; First data bytes address on each page
         endif
 
-ALTERNATE_PAGE_SELECT   equ $E000       ; Alternate page select port address for MultiCart
+        if MULTICART != 0
+PAGE_SELECT             equ $c000 ; Page select address for MultiCart
+PAGE_DATA_START_ADDRESS equ $c00b ; First data bytes address on each page
+ALTERNATE_PAGE_SELECT   equ $E000 ; Alternate page select port address for MultiCart
+        endif
 
-        ; File name constants
-CART_MAX_FILENAME_LENGTH equ     16
+        ; File constants
+CART_MAX_FILENAME_LENGTH        equ 16
+CHIN_UNCOMPRESSED_BYTE_COUNT    equ 16
 
         ; System types
 BUFFERED_FILE   equ $11

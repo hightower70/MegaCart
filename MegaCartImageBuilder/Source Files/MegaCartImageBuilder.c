@@ -26,8 +26,9 @@
 // Constants
 #define CART_PAGE_SIZE 16384					// 16 kByte
 #define FILE_BUFFER_SIZE 4*1024*1024	// 4 MByte
-#define MAX_FILE_NUMBER 128
+#define MAX_FILE_NUMBER 256
 #define LINE_BUFFER_SIZE 80
+#define CHIN_UNCOMPRESSED_BYTE_COUNT 16	// number of characters to be read using CH_IN TVC ROM function (these bytes at the beginning of each file will not be compressed)
 
 #define CART_TYPE_MEGACART	0
 #define CART_TYPE_MULTICART	1
@@ -49,10 +50,12 @@ extern const unsigned char multicart_loader_bin[];
 extern const long int multicart_decomp_loader_bin_size;
 extern const unsigned char multicart_decomp_loader_bin[];
 
-
-
 ///////////////////////////////////////////////////////////////////////////////
 // Types
+
+/// <summary>
+/// Information about the loaded program files
+/// </summary>
 typedef struct 
 {
 	wchar_t Filename[MAX_PATH_LENGTH];
@@ -64,6 +67,9 @@ typedef struct
 
 #pragma pack(push, 1)
 
+/// <summary>
+/// Information about a file in the ROM file system
+/// </summary>
 typedef struct
 {
 	char Filename[MAX_TVC_FILE_NAME_LENGTH];
@@ -72,27 +78,31 @@ typedef struct
 	uint16_t Length;
 } ROMFileInfo;
 
+/// <summary>
+/// ROM File system information
+/// </summary>
 typedef struct
 {
 	uint8_t Files1xCount;	// Number of files in the image for 1.x TVC ROM version
 	uint8_t Files2xCount;	// Number of files in the image for 2.x TVC ROM version
 	uint16_t Directory1xAddress;	// Address of the directory for 1.x TVC ROM version
 	uint16_t Directory2xAddress;	// Address of the directory for 1.x TVC ROM version
-	uint16_t FilesAddress;				// Address of the file data
+	uint16_t FilesAddress;				// Address of the file binary data
 } ROMFileSystemInfo;
 
 #pragma pack(pop)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Function prototypes
-bool LoadFiles(void);
-bool LoadProgramFile(ProgramFileInfo* inout_cas_file);
-bool CreateROMImage(void);
-bool CreateROMLoader();
-bool CreateROMDirectory();
-bool CreateROMFileSystem();
-bool ProcessFileListEntry(wchar_t* in_file_name);
-
+static bool LoadFiles(void);
+static bool LoadProgramFile(ProgramFileInfo* inout_cas_file);
+static bool CreateROMImage(void);
+static bool CreateROMLoader();
+static bool CreateROMDirectory();
+static bool CreateROMFileSystem();
+static bool ProcessFileListEntry(wchar_t* in_file_name);
+static void CopyDataToROM(int length, uint8_t* in_source);
+static bool IsCASFile(ProgramFileInfo* in_file_info);
 
 ///////////////////////////////////////////////////////////////////////////////
 // Global variables
@@ -356,7 +366,7 @@ int wmain(int argc, wchar_t** argv)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Processes one command line option
-bool ProcessFileListEntry(wchar_t* in_file_name)
+static bool ProcessFileListEntry(wchar_t* in_file_name)
 {
 	bool success = true;
 	int i, j;
@@ -399,7 +409,7 @@ bool ProcessFileListEntry(wchar_t* in_file_name)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Loads all CAS files
-bool LoadFiles()
+static bool LoadFiles()
 {
 	int i;
 	bool success = true;
@@ -417,7 +427,7 @@ bool LoadFiles()
 
 ///////////////////////////////////////////////////////////////////////////////
 // Load program file
-bool LoadProgramFile(ProgramFileInfo* inout_program_file)
+static bool LoadProgramFile(ProgramFileInfo* inout_program_file)
 {
 	FILE* program_file = NULL;
 	bool success = true;
@@ -511,7 +521,7 @@ bool LoadProgramFile(ProgramFileInfo* inout_program_file)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Creates ROM image
-bool CreateROMImage(void)
+static bool CreateROMImage(void)
 {
 	bool success = true;
 
@@ -529,6 +539,11 @@ bool CreateROMImage(void)
 			g_rom_file_system_info_address = g_rom_image_address - sizeof(ROMFileSystemInfo);
 			g_rom_files_address = g_rom_file_system_info_address + sizeof(ROMFileSystemInfo) + sizeof(ROMFileInfo) * g_file_info_count;
 			g_rom_image_address = g_rom_files_address;
+
+			if (g_compressed_mode)
+				PRINT_INFO(L"\nBuilding Compressed ROM file system.");
+			else
+				PRINT_INFO(L"\nBuilding ROM file system.");
 
 			success = CreateROMFileSystem();
 		}
@@ -595,7 +610,7 @@ bool CreateROMImage(void)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Creates loader code
-bool CreateROMLoader()
+static bool CreateROMLoader()
 {
 	unsigned const char* loader;
 	int loader_length;
@@ -643,7 +658,7 @@ bool CreateROMLoader()
 
 ///////////////////////////////////////////////////////////////////////////////
 // Creates directory on the ROM image
-bool CreateROMDirectory()
+static bool CreateROMDirectory()
 {
 	ROMFileInfo* file_info;
 	int file_info_address;
@@ -699,10 +714,9 @@ bool CreateROMDirectory()
 
 ///////////////////////////////////////////////////////////////////////////////
 // Creates files on the ROM image
-bool CreateROMFileSystem()
+static bool CreateROMFileSystem()
 {
 	int j;
-	int byte_count;
 	uint8_t* compressed_data = NULL;
 	size_t compressed_size = 0;
 	int length;
@@ -760,39 +774,42 @@ bool CreateROMFileSystem()
 
 			if (g_compressed_mode)
 			{
-				compressed_data = ZX7Compress(ZX7Optimize(g_file_buffer + g_file_info[i].BufferPos, g_file_info[i].Length), g_file_buffer + g_file_info[i].BufferPos, g_file_info[i].Length, &compressed_size);
-				length = (int)compressed_size;
-				source = compressed_data;
+				if (IsCASFile(&g_file_info[i]))
+				{
+					compressed_data = ZX7Compress(ZX7Optimize(g_file_buffer + g_file_info[i].BufferPos, g_file_info[i].Length), g_file_buffer + g_file_info[i].BufferPos, g_file_info[i].Length, &compressed_size);
+					length = (int)compressed_size;
+					source = compressed_data;
+				}
+				else
+				{
+					// compression mode
+					if (g_file_info[i].Length > CHIN_UNCOMPRESSED_BYTE_COUNT)
+					{
+						// copy first bytes of each file (without compression)
+						CopyDataToROM(CHIN_UNCOMPRESSED_BYTE_COUNT, (uint8_t*)(g_file_buffer + g_file_info[i].BufferPos));
+
+						// copy remaining bytes using compression
+						compressed_data = ZX7Compress(ZX7Optimize(g_file_buffer + g_file_info[i].BufferPos + CHIN_UNCOMPRESSED_BYTE_COUNT, g_file_info[i].Length - CHIN_UNCOMPRESSED_BYTE_COUNT), g_file_buffer + g_file_info[i].BufferPos + CHIN_UNCOMPRESSED_BYTE_COUNT, g_file_info[i].Length - CHIN_UNCOMPRESSED_BYTE_COUNT, &compressed_size);
+						length = (int)compressed_size;
+						source = compressed_data;
+					}
+					else
+					{
+						// store only since the file length is smaller than CHIN_BYTE_COUNT
+						source = (uint8_t*)(g_file_buffer + g_file_info[i].BufferPos);
+						length = g_file_info[i].Length;
+					}
+				}
 			}
 			else
 			{
+				// store mode (no compression)
 				source = (uint8_t*)(g_file_buffer + g_file_info[i].BufferPos);
 				length = g_file_info[i].Length;
 			}
 
 			// copy file to the ROM image
-			for (byte_count = 0; byte_count < length; byte_count++)
-			{
-				if ((g_rom_image_address % CART_PAGE_SIZE) == 0)
-				{
-					// copy page start bytes
-					switch (g_cart_type)
-					{
-						case CART_TYPE_MEGACART:
-							memcpy(g_rom_image + g_rom_image_address, g_megacart_page_start_bytes, sizeof(g_megacart_page_start_bytes));
-							g_rom_image_address += sizeof(g_megacart_page_start_bytes);
-							break;
-
-						case CART_TYPE_MULTICART:
-							memcpy(g_rom_image + g_rom_image_address, g_multicart_page_start_bytes, sizeof(g_multicart_page_start_bytes));
-							g_rom_image_address += sizeof(g_multicart_page_start_bytes);
-							break;
-					}
-				}
-
-				g_rom_image[g_rom_image_address++] = *source;
-				source++;
-			}
+			CopyDataToROM(length, source);
 
 			if(g_compressed_mode)
 			{
@@ -802,4 +819,47 @@ bool CreateROMFileSystem()
 	}
 
 	return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Copies data from the file buffer to the ROM buffer
+static void CopyDataToROM(int length, uint8_t* in_source)
+{
+	int byte_count;
+
+	for (byte_count = 0; byte_count < length; byte_count++)
+	{
+		// check for page start
+		if ((g_rom_image_address % CART_PAGE_SIZE) == 0)
+		{
+			// copy page start bytes
+			switch (g_cart_type)
+			{
+				case CART_TYPE_MEGACART:
+					memcpy(g_rom_image + g_rom_image_address, g_megacart_page_start_bytes, sizeof(g_megacart_page_start_bytes));
+					g_rom_image_address += sizeof(g_megacart_page_start_bytes);
+					break;
+
+				case CART_TYPE_MULTICART:
+					memcpy(g_rom_image + g_rom_image_address, g_multicart_page_start_bytes, sizeof(g_multicart_page_start_bytes));
+					g_rom_image_address += sizeof(g_multicart_page_start_bytes);
+					break;
+			}
+		}
+
+		g_rom_image[g_rom_image_address++] = *in_source;
+		in_source++;
+	}
+}
+
+static bool IsCASFile(ProgramFileInfo* in_file_info)
+{
+	wchar_t* dot_pos = wcsrchr(in_file_info->Filename, L'.');
+
+	if (dot_pos != NULL)
+	{
+		return _wcsicmp(dot_pos, L".CAS") == 0;
+	}
+
+	return false;
 }

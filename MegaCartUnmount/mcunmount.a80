@@ -1,0 +1,174 @@
+        ;---------------------------------------------------------------------
+        ; TVComputer MULTICART ROM Unmount Program
+        ; (c) 2023 Laszlo Arvai
+        ;---------------------------------------------------------------------
+        .include "definitions.a80"
+
+        org     PROGRAM_START_ADDRESS
+
+        db      $0f, $01, $00, $58, $9a, "USR", $96, "6693", $95, $ff, $00                                         ; 2 X=USR(6722)
+
+        ; BASIC SYMBOL TABLE
+        ds      38                              ; Storage for BASIC symbol table                  
+
+        ; Program start
+
+        ; Detect MultiCart
+        
+        ; Set memory map to: U0, U1, U2, CART
+        ld      a, P_U0_U1_U2_CART
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+
+        ld      hl, ID_STRING_ADDRESS
+        ld      de, MULTICART_STRING
+        ld      b, MULTICART_STRING_LENGTH
+
+        ; compare ID string
+CHECK_ID_STRING:
+        ld      a, (de)
+        cp      (hl)
+        jr      nz, DISPLAY_MULTICART_NOT_FOUND
+
+        inc     hl
+        inc     de
+
+        djnz   CHECK_ID_STRING
+
+        ; Multicart found 
+
+        ; restore paging
+        ld      a, P_U0_U1_U2_SYS
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+
+        ; check zero page code
+        ld      de, SYSTEM_FUNCTION_CALLER
+        ld      hl, SYSTEM_FUNCTION_CALLER_STORAGE
+        ld      b, SYSTEM_FUNCTION_CALLER_CODE_LENGTH
+
+CHECK_ZERO_PAGE_CODE:
+        ld      a, (de)
+        cp      (hl)
+        jr      nz, DISPLAY_MULTICART_NOT_FOUND
+
+        inc     hl
+        inc     de
+
+        djnz    CHECK_ZERO_PAGE_CODE
+
+        ; zero page code is ok
+        ld      hl, (SYSTEM_FUNCTION_CHAIN_ADDRESS)      ; save original ROM jump address
+        push    hl
+
+        ; revert back the code
+        di
+
+        ld      hl, ORIGINAL_SYSTEM_FUNCTION_CALLER_STORAGE
+        ld      de, SYSTEM_FUNCTION_CALLER
+        ld      bc, ORIGINAL_SYSTEM_FUNCTION_CALLER_LENGTH
+
+        ldir
+
+        ; restore jump address
+        pop     hl
+        ld      (SYSTEM_FUNCTION_JUMP+1), hl
+
+        ei
+
+        ; display message
+        ld      de, MULTICART_UNMOUNTED
+        ld      c, MULTICART_UNMOUNTED_LENGTH
+        ld      b, 0
+         
+        rst     $30
+        db      VID_BKOUT  
+
+        ret      
+
+DISPLAY_MULTICART_NOT_FOUND:
+        ; restore paging
+        ld      a, P_U0_U1_U2_SYS
+        ld      (P_SAVE), a
+        out     (PAGE_REG), a
+
+        ; display error message
+        ld      de, MULTICART_NOT_FOUND
+        ld      c, MULTICART_NOT_FOUND_LENGTH
+        ld      b, 0
+         
+        rst     $30
+        db      VID_BKOUT
+
+        ; return
+        ret
+
+MULTICART_STRING: 
+        db      "MULTICART"
+MULTICART_STRING_LENGTH equ $ - MULTICART_STRING
+
+
+MULTICART_NOT_FOUND:
+        db      "MultiCart not found. Exiting...", $0d, $0a
+MULTICART_NOT_FOUND_LENGTH      equ $ - MULTICART_NOT_FOUND
+
+MULTICART_UNMOUNTED:
+        db      "MultiCart unmounted...", $0d, $0a
+MULTICART_UNMOUNTED_LENGTH      equ $ - MULTICART_UNMOUNTED
+
+        ; *************************************
+        ; * MultiCart  System function caller *
+        ; *************************************
+
+SYSTEM_FUNCTION_CALLER_STORAGE:
+        phase SYSTEM_FUNCTION_CALLER
+
+        ; *** System function caller
+        ex      (sp),hl                     ; Get return address
+        ld      a,(hl)                      ; Get function code
+        inc     hl                          ; Increment return address
+        ex      (sp),hl                     ; Store return address
+        ex      af,af'                      ; Save fuction code to AF'
+        push    af                          ; and store original AF' to stack
+
+        ld      a,(P_SAVE)                  ; Save memory pageing settings
+        push    af                          ; to stack
+
+        ld      A,P_U0_U1_U2_CART           ; Set paging to U0-U1-U2-CART
+        ld      (P_SAVE),a
+        out     (PAGE_REG),a
+
+SYSTEM_FUNCTION_CALLER_CODE_LENGTH equ $-SYSTEM_FUNCTION_CALLER
+        dephase
+
+        ; ***********************************
+        ; * Original System function caller *
+        ; ***********************************
+
+ORIGINAL_SYSTEM_FUNCTION_CALLER_STORAGE:
+        phase SYSTEM_FUNCTION_CALLER
+
+        ex      (sp), hl
+        ld      a, (hl)
+        inc     hl
+        ex     (sp), hl
+        ex      af, af'
+        push    af
+        ld      a, ($0003)
+        push    af
+        ld      a, $70
+        ld      ($0003), a
+        out     ($02), a
+SYSTEM_FUNCTION_JUMP:
+        jp      $c363
+
+        ex      af , af'
+        pop     af
+        ld      ($0003), a
+        out     ($02), a
+        pop     af
+        ex      af, af'
+        ret
+
+ORIGINAL_SYSTEM_FUNCTION_CALLER_LENGTH equ $-SYSTEM_FUNCTION_CALLER
+        dephase
